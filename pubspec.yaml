@@ -1,0 +1,29 @@
+name: isolate_runner_mixin
+description: A Flutter-aware Dart mixin for easily running CPU-intensive tasks, including those that use Flutter plugins, in a background isolate.
+version: 0.1.0
+homepage: https://github.com/landxcape/isolate_runner_mixin
+license: MIT
+keywords:
+  - flutter
+  - isolate
+  - background
+  - mixin
+  - concurrency
+  - worker
+  - offload
+  - compute
+  - plugin
+  - performance
+
+environment:
+  sdk: ^3.8.1
+  flutter: ">=1.17.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
