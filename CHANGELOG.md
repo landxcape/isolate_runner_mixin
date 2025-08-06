@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 - Patch
+
+* Refactored
+
 ## 0.1.0 - Initial Release
 
 * Introduced `IsolateRunnerMixin` for running functions in background isolates.
