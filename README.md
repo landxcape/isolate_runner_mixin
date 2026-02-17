@@ -1,101 +1,239 @@
 # isolate_runner_mixin
 
-A Flutter-aware Dart mixin for easily running CPU-intensive tasks, including those that use Flutter plugins, in a background isolate.
+A Flutter mixin for running work off the UI isolate.
 
-## Why use this package?
+It gives you two APIs:
 
-Flutter applications run on a single thread, the UI thread. If you perform long-running or computationally intensive tasks directly on this thread, your UI can become unresponsive, leading to "jank" and a poor user experience. Dart's Isolates provide a way to run code concurrently in separate memory spaces, preventing UI blocking.
+- `runInIsolate`: one-off work
+- `spawnWorker` + `requestWorker`: long-lived worker isolate
 
-However, using raw dart:isolate APIs can be verbose, especially when dealing with Flutter plugins, which require specific initialization (BackgroundIsolateBinaryMessenger.ensureInitialized) within the background isolate.
+## Quick start
 
-This package provides a simple IsolateRunnerMixin that encapsulates this boilerplate, allowing you to easily offload any `FutureOr<T> Function()` to a background isolate.
+Use this when you are starting:
 
-## Key Features
+- Use `runInIsolate` if you only need one background call.
+- Use `spawnWorker` + `requestWorker` if you need many calls over time.
 
-**Simple API**: A single runInIsolate method.
-
-**Flutter Plugin Compatible**: Automatically initializes BackgroundIsolateBinaryMessenger in the background isolate using the RootIsolateToken.
-
-**UI Thread Protection**: Ensures heavy computations run off the main thread.
-
-**Graceful Fallback**: Automatically runs tasks on the current thread if no Flutter binding is available (e.g., in pure Dart tests).
-
-**Unique Mixin Design**: Integrates isolate functionality directly into your classes, providing a clean, object-oriented API that feels more natural than using top-level functions or helper classes.
-
-## Installation
-
-Add this to your pubspec.yaml file:
-
-## dependencies
-
-```yaml
-  isolate_runner_mixin: <latest>
-```
-
-Then, run flutter pub get.
-
-## Usage
-
-## Apply the Mixin
-
-Apply IsolateRunnerMixin to any class where you want to run tasks in a background isolate.
+Minimum one-off example:
 
 ```dart
 import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
-import 'package:fast_rsa/fast_rsa.dart'; // Example plugin usage
+
+int _sum(int n) {
+  var total = 0;
+  for (var i = 0; i < n; i++) {
+    total += i;
+  }
+  return total;
+}
 
 class MyService with IsolateRunnerMixin {
-  // Your service logic
-  String _publicKey = '...'; // Example data
-
-  Future<bool> verifyData(String data, String signature) async {
-    // Use runInIsolate to offload the heavy work
-    return await runInIsolate(() async {
-      // This code runs in the background isolate
-      await Future.delayed(const Duration(milliseconds: 100)); // Simulate work
-      final isValid = await RSA.verifyPKCS1v15(signature, data, Hash.SHA256, _publicKey);
-      return isValid;
-    });
+  Future<int> compute(int n) {
+    return runInIsolate(() => _sum(n));
   }
 }
 ```
 
-## Top-Level/Static Functions for Heavy Work (Recommended)
-
-While Isolate.run can implicitly capture variables from closures, it's generally safer and more explicit to pass all necessary data to a top-level or static function that performs the heavy work. This function will then be called from within the runInIsolate's closure.
+## What `runInIsolate` receives
 
 ```dart
-// This must be a top-level function or a static method.
-// It receives all its data via explicit arguments.
-import 'package:fast_rsa/fast_rsa.dart';
+await runInIsolate(() {
+  // heavy code
+  return computeSomething();
+});
+```
 
-Future<bool> _performVerification(String data, String signature, String publicKey) async {
-  // This code runs in the background isolate
-  await Future.delayed(const Duration(milliseconds: 100)); // Simulate work
-  final isValid = await RSA.verifyPKCS1v15(signature, data, Hash.SHA256, publicKey);
-  return isValid;
+You pass a callback. The callback body runs in the target isolate.
+
+You are not passing a precomputed value.
+
+```dart
+final x = heavyCalc(); // runs on main isolate right now
+await runInIsolate(() => x);
+```
+
+In this case, `heavyCalc()` already ran on the main isolate.
+
+## Rules for reliable usage
+
+1. Keep heavy work inside the callback body.
+2. Prefer top-level or `static` functions for isolate code.
+3. Send only supported payload/result types (`null`, primitives, `List`, `Map`,
+   `TransferableTypedData`, `SendPort`).
+4. If you use `spawnWorker`, call `disposeWorker()` in your owner lifecycle.
+
+## Installation
+
+```yaml
+dependencies:
+  isolate_runner_mixin: <latest_version>
+```
+
+Run `flutter pub get`.
+
+## Usage: One-Off Tasks
+
+```dart
+import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
+
+int _sum(int n) {
+  var total = 0;
+  for (var i = 0; i < n; i++) {
+    total += i;
+  }
+  return total;
 }
 
 class MyService with IsolateRunnerMixin {
-  String _publicKey = '...'; // Example data
-
-  Future<bool> verifyData(String data, String signature) async {
-    return await runInIsolate(() async {
-      // Call the top-level function with explicit arguments
-      return await _performVerification(data, signature,_publicKey);
-    });
+  Future<int> heavyComputation(int n) {
+    return runInIsolate(
+      () => _sum(n),
+      mode: IsolateRunMode.alwaysIsolate,
+      timeout: const Duration(seconds: 3),
+    );
   }
 }
+```
+
+### Modes
+
+- `IsolateRunMode.auto`: background isolate only when a `RootIsolateToken` is
+  available, otherwise current isolate.
+- `IsolateRunMode.alwaysIsolate`: always background isolate.
+- `IsolateRunMode.currentIsolate`: always current isolate.
+
+### Preferred pattern
+
+```dart
+// top-level or static function
+bool _verify(String data, String sig, String pubKey) {
+  // Verification logic
+  return true;
+}
+
+class MyService with IsolateRunnerMixin {
+  final String publicKey;
+  MyService(this.publicKey);
+
+  Future<bool> verify(String data, String signature) {
+    return runInIsolate(
+      () => _verify(data, signature, publicKey),
+      mode: IsolateRunMode.alwaysIsolate,
+    );
+  }
+}
+```
+
+## Usage: Persistent Worker
+
+Use a persistent worker when you need many requests over time.
+The handler should be top-level or `static`.
+
+```dart
+import 'dart:async';
+
+FutureOr<Object?> workerHandler(String command, Object? payload) async {
+  switch (command) {
+    case 'double':
+      return (payload as int) * 2;
+    case 'delayEcho':
+      final map = payload as Map<Object?, Object?>;
+      await Future<void>.delayed(Duration(milliseconds: map['delayMs'] as int));
+      return map['value'];
+  }
+  throw UnsupportedError('Unknown command: $command');
+}
+```
+
+Initialize once, then send requests:
+
+```dart
+class MyService with IsolateRunnerMixin {
+  Future<void> init() async {
+    await spawnWorker(
+      handler: workerHandler,
+      options: const SpawnWorkerOptions(maxPendingRequests: 500),
+    );
+  }
+
+  Future<int> doubleValue(int input) {
+    return requestWorker<int>(command: 'double', payload: input);
+  }
+
+  Future<void> dispose() async {
+    await disposeWorker();
+  }
+}
+```
+
+### Worker lifecycle
+
+- `spawnWorker` is idempotent.
+- If startup is in progress, other `spawnWorker` calls wait for the same startup.
+- `requestWorker` auto-respawns after dispose (if handler was previously registered).
+- Calling `spawnWorker` again with different handler/options restarts the
+  worker with the new configuration.
+- `disposeWorker` must be called when the owner lifecycle ends.
+
+### Payload contract
+
+`requestWorker` payloads and worker results must be sendable by this package
+contract:
+
+- `null`, `bool`, `num`, `String`
+- `List`/`Map` (containing supported values)
+- `TransferableTypedData`
+- `SendPort`
+
+Custom classes are not accepted directly. Convert to `Map`/`List`.
+
+### Flutter Lifecycle Example
+
+```dart
+import 'dart:async';
+import 'package:flutter/widgets.dart';
+import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
+
+class _MyState extends State<MyWidget> with IsolateRunnerMixin {
+  @override
+  void initState() {
+    super.initState();
+    spawnWorker(handler: workerHandler);
+  }
+
+  @override
+  void dispose() {
+    unawaited(disposeWorker());
+    super.dispose();
+  }
+}
+```
+
+In debug mode, the package prints a warning if `disposeWorker` is missed.
+
+## Common mistakes
+
+```dart
+// Wrong: heavyCalc runs on main isolate before runInIsolate is called.
+final value = heavyCalc();
+await runInIsolate(() => value);
+```
+
+```dart
+// Correct: heavyCalc runs in the target isolate.
+await runInIsolate(() => heavyCalc());
+```
+
+```dart
+// Wrong: custom class is not directly sendable as request payload.
+await requestWorker(command: 'save', payload: MyModel(...));
+```
+
+```dart
+// Correct: convert to map/list first.
+await requestWorker(command: 'save', payload: myModel.toJson());
 ```
 
 ## Example App
 
-For a complete example, see the example/ directory in the package repository. The example demonstrates using the mixin to run both a CPU-intensive loop and a plugin-like task while keeping the UI responsive.
-
-## Contributing
-
-Feel free to open issues or pull requests on GitHub.
-
-## License
-
-This package is licensed under the MIT License. See the LICENSE file for details.
+For a complete app, see the `example/` directory.
