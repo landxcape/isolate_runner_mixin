@@ -1,40 +1,52 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
 
-// --- Example: A service that uses the mixin ---
-class MyHeavyComputationService with IsolateRunnerMixin {
-  Future<String> performHeavyTask(String input) async {
-    // We'll pass a closure to runInIsolate.
-    // This closure will be executed in the background isolate.
-    return await runInIsolate(() async {
-      // This code runs in the background isolate.
-      // Simulate a CPU-intensive task.
-      debugPrint('Isolate: Starting heavy computation for: "$input"');
-      String result = '';
-      for (int i = 0; i < 100000000; i++) {
-        result = input + i.toString(); // Just some arbitrary computation
-      }
-      debugPrint('Isolate: Finished heavy computation.');
-      return "Result for '$input': ${result.substring(result.length - 10)}";
-    });
+// ---------------------------------------------------------------------------
+// Top-level helpers (must be top-level or static for isolate usage)
+// ---------------------------------------------------------------------------
+
+int _sumUpTo(int n) {
+  var total = 0;
+  for (var i = 0; i < n; i++) {
+    total += i;
+  }
+  return total;
+}
+
+// Worker handler for the persistent worker demo.
+FutureOr<Object?> _workerHandler(String command, Object? payload) async {
+  switch (command) {
+    case 'sum':
+      final n = payload as int;
+      return _sumUpTo(n);
+    case 'echo':
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      return payload;
+  }
+  throw UnsupportedError('Unknown command: $command');
+}
+
+// ---------------------------------------------------------------------------
+// Service using the mixin (instance API)
+// ---------------------------------------------------------------------------
+
+class ComputeService with IsolateRunnerMixin {
+  Future<int> computeSum(int n) {
+    // Instance method — background isolate via the mixin.
+    return runInIsolate(() => _sumUpTo(n));
   }
 
-  Future<String> performPluginTask(String input) async {
-    // This example assumes you have a plugin that might block the UI
-    // if called directly on the main thread. For demonstration,
-    // we'll just use a Future.delayed, but imagine this is a plugin call.
-    return await runInIsolate(() async {
-      debugPrint('Isolate: Starting plugin-like task for: "$input"');
-      // In a real scenario, this would be a call to a Flutter plugin:
-      // e.g., await SomePlugin.doSomethingNative(input);
-      await Future.delayed(Duration(seconds: 1));
-      debugPrint('Isolate: Finished plugin-like task.');
-      return "Plugin Task Done for: $input";
-    });
+  Future<void> dispose() async {
+    await disposeWorker();
   }
 }
 
-// --- Flutter UI ---
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
+
 void main() {
   runApp(const MyApp());
 }
@@ -46,96 +58,228 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Isolate Runner Example',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: const MyHomePage(),
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+        useMaterial3: true,
+      ),
+      home: const _HomePage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key});
+class _HomePage extends StatefulWidget {
+  const _HomePage();
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<_HomePage> createState() => _HomePageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  final MyHeavyComputationService _service = MyHeavyComputationService();
-  String _computationResult = 'No computation yet.';
-  String _pluginTaskResult = 'No plugin task yet.';
-  bool _isComputing = false;
-  bool _isPluginTaskRunning = false;
+class _HomePageState extends State<_HomePage> {
+  final _service = ComputeService();
 
-  Future<void> _startComputation() async {
+  String _staticResult = '—';
+  String _instanceResult = '—';
+  String _workerResult = '—';
+
+  bool _staticRunning = false;
+  bool _instanceRunning = false;
+  bool _workerRunning = false;
+
+  // ── Static API demo ────────────────────────────────────────────────────────
+
+  Future<void> _runStatic() async {
     setState(() {
-      _isComputing = true;
-      _computationResult = 'Computing...';
+      _staticRunning = true;
+      _staticResult = 'Computing…';
     });
     try {
-      final result = await _service.performHeavyTask('Example Data');
-      setState(() {
-        _computationResult = result;
-      });
+      // No class or mixin instance needed — just call the static method.
+      final result = await IsolateRunnerMixin.run(
+        () => _sumUpTo(50000000),
+        mode: IsolateRunMode.alwaysIsolate,
+      );
+      setState(() => _staticResult = 'sum(50M) = $result');
     } catch (e) {
-      setState(() {
-        _computationResult = 'Error: $e';
-      });
+      setState(() => _staticResult = 'Error: $e');
     } finally {
-      setState(() {
-        _isComputing = false;
-      });
+      setState(() => _staticRunning = false);
     }
   }
 
-  Future<void> _startPluginTask() async {
+  // ── Instance API demo ──────────────────────────────────────────────────────
+
+  Future<void> _runInstance() async {
     setState(() {
-      _isPluginTaskRunning = true;
-      _pluginTaskResult = 'Running plugin task...';
+      _instanceRunning = true;
+      _instanceResult = 'Computing…';
     });
     try {
-      final result = await _service.performPluginTask('Plugin Input');
-      setState(() {
-        _pluginTaskResult = result;
-      });
+      final result = await _service.computeSum(50000000);
+      setState(() => _instanceResult = 'sum(50M) = $result');
     } catch (e) {
-      setState(() {
-        _pluginTaskResult = 'Error: $e';
-      });
+      setState(() => _instanceResult = 'Error: $e');
     } finally {
-      setState(() {
-        _isPluginTaskRunning = false;
-      });
+      setState(() => _instanceRunning = false);
     }
   }
+
+  // ── Persistent worker demo ─────────────────────────────────────────────────
+
+  Future<void> _runWorker() async {
+    setState(() {
+      _workerRunning = true;
+      _workerResult = 'Spawning worker…';
+    });
+    try {
+      await _service.spawnWorker(handler: _workerHandler);
+      setState(() => _workerResult = 'Worker running — sending requests…');
+
+      final results = await Future.wait<int>([
+        _service.requestWorker<int>(command: 'sum', payload: 10000000),
+        _service.requestWorker<int>(command: 'sum', payload: 20000000),
+        _service.requestWorker<int>(command: 'sum', payload: 30000000),
+      ]);
+
+      setState(
+        () => _workerResult =
+            'sum(10M)=${results[0]}\n'
+            'sum(20M)=${results[1]}\n'
+            'sum(30M)=${results[2]}',
+      );
+    } catch (e) {
+      setState(() => _workerResult = 'Error: $e');
+    } finally {
+      setState(() => _workerRunning = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    unawaited(_service.dispose());
+    super.dispose();
+  }
+
+  // ── UI ─────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Isolate Runner Example')),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: <Widget>[
-              SizedBox(height: MediaQuery.sizeOf(context).height / 4),
-              ElevatedButton(onPressed: _isComputing ? null : _startComputation, child: const Text('Start Heavy Computation')),
-              const SizedBox(height: 10),
-              _isComputing ? const CircularProgressIndicator() : Text(_computationResult, textAlign: TextAlign.center),
-              const SizedBox(height: 30),
-              ElevatedButton(onPressed: _isPluginTaskRunning ? null : _startPluginTask, child: const Text('Start Plugin-like Task')),
-              const SizedBox(height: 10),
-              _isPluginTaskRunning ? const CircularProgressIndicator() : Text(_pluginTaskResult, textAlign: TextAlign.center),
-              const SizedBox(height: 30),
-              const Text(
-                'Try scrolling or interacting with the UI while tasks are running to see that the UI remains responsive.',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontStyle: FontStyle.italic),
-              ),
-              SizedBox(height: MediaQuery.sizeOf(context).height * 0.6),
-              const Text('Powered by Isolate Runner Mixin', style: TextStyle(color: Colors.blue, fontSize: 16)),
-            ],
+      appBar: AppBar(
+        title: const Text('isolate_runner_mixin'),
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(24),
+        children: [
+          _DemoCard(
+            title: 'Static API',
+            subtitle: 'IsolateRunnerMixin.run() — no class needed',
+            code: 'await IsolateRunnerMixin.run(() => _sumUpTo(50000000));',
+            result: _staticResult,
+            running: _staticRunning,
+            onRun: _runStatic,
           ),
+          const SizedBox(height: 16),
+          _DemoCard(
+            title: 'Instance API',
+            subtitle: 'class Service with IsolateRunnerMixin',
+            code: 'await runInIsolate(() => _sumUpTo(50000000));',
+            result: _instanceResult,
+            running: _instanceRunning,
+            onRun: _runInstance,
+          ),
+          const SizedBox(height: 16),
+          _DemoCard(
+            title: 'Persistent Worker',
+            subtitle: 'spawnWorker + requestWorker (3 concurrent requests)',
+            code: 'await spawnWorker(handler: _workerHandler);\n'
+                'await Future.wait([requestWorker(...), requestWorker(...), ...]);',
+            result: _workerResult,
+            running: _workerRunning,
+            onRun: _runWorker,
+          ),
+          const SizedBox(height: 32),
+          const Text(
+            'The UI stays responsive during all operations — scroll or tap '
+            'while tasks are running to verify.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DemoCard extends StatelessWidget {
+  const _DemoCard({
+    required this.title,
+    required this.subtitle,
+    required this.code,
+    required this.result,
+    required this.running,
+    required this.onRun,
+  });
+
+  final String title;
+  final String subtitle;
+  final String code;
+  final String result;
+  final bool running;
+  final VoidCallback onRun;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: Theme.of(context).textTheme.titleMedium),
+            Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: cs.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                code,
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                FilledButton(
+                  onPressed: running ? null : onRun,
+                  child: Text(running ? 'Running…' : 'Run'),
+                ),
+                const SizedBox(width: 16),
+                if (running)
+                  const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                else
+                  Expanded(
+                    child: Text(
+                      result,
+                      style: TextStyle(color: cs.primary, fontFamily: 'monospace', fontSize: 12),
+                    ),
+                  ),
+              ],
+            ),
+          ],
         ),
       ),
     );
