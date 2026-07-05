@@ -4,63 +4,38 @@ A Flutter mixin for running work off the UI isolate.
 
 It gives you two APIs:
 
-- `runInIsolate`: one-off work
+- `runInIsolate` / `IsolateRunnerMixin.run`: one-off work
 - `spawnWorker` + `requestWorker`: long-lived worker isolate
 
 ## Quick start
 
-Use this when you are starting:
-
-- Use `runInIsolate` if you only need one background call.
+- Use `runInIsolate` (or the static `IsolateRunnerMixin.run`) if you only need one background call.
 - Use `spawnWorker` + `requestWorker` if you need many calls over time.
 
-Minimum one-off example:
+**One-off (static — no class needed):**
 
 ```dart
 import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
 
 int _sum(int n) {
   var total = 0;
-  for (var i = 0; i < n; i++) {
-    total += i;
-  }
+  for (var i = 0; i < n; i++) total += i;
   return total;
 }
 
+// Call directly, anywhere — no class or mixin instance required.
+final result = await IsolateRunnerMixin.run(() => _sum(50000000));
+```
+
+**One-off (via mixin instance):**
+
+```dart
 class MyService with IsolateRunnerMixin {
   Future<int> compute(int n) {
     return runInIsolate(() => _sum(n));
   }
 }
 ```
-
-## What `runInIsolate` receives
-
-```dart
-await runInIsolate(() {
-  // heavy code
-  return computeSomething();
-});
-```
-
-You pass a callback. The callback body runs in the target isolate.
-
-You are not passing a precomputed value.
-
-```dart
-final x = heavyCalc(); // runs on main isolate right now
-await runInIsolate(() => x);
-```
-
-In this case, `heavyCalc()` already ran on the main isolate.
-
-## Rules for reliable usage
-
-1. Keep heavy work inside the callback body.
-2. Prefer top-level or `static` functions for isolate code.
-3. Send only supported payload/result types (`null`, primitives, `List`, `Map`,
-   `TransferableTypedData`, `SendPort`).
-4. If you use `spawnWorker`, call `disposeWorker()` in your owner lifecycle.
 
 ## Installation
 
@@ -71,43 +46,44 @@ dependencies:
 
 Run `flutter pub get`.
 
+---
+
 ## Usage: One-Off Tasks
+
+### Static API
+
+Use `IsolateRunnerMixin.run` when you don't want to (or can't) add the mixin to
+a class:
 
 ```dart
 import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
 
-int _sum(int n) {
-  var total = 0;
-  for (var i = 0; i < n; i++) {
-    total += i;
-  }
-  return total;
-}
-
-class MyService with IsolateRunnerMixin {
-  Future<int> heavyComputation(int n) {
-    return runInIsolate(
-      () => _sum(n),
-      mode: IsolateRunMode.alwaysIsolate,
-      timeout: const Duration(seconds: 3),
-    );
-  }
-}
+// Works anywhere — top-level, static context, test code, etc.
+final result = await IsolateRunnerMixin.run(
+  () => expensiveComputation(data),
+  mode: IsolateRunMode.alwaysIsolate,
+  timeout: const Duration(seconds: 5),
+);
 ```
 
-### Modes
-
-- `IsolateRunMode.auto`: background isolate only when a `RootIsolateToken` is
-  available, otherwise current isolate.
-- `IsolateRunMode.alwaysIsolate`: always background isolate.
-- `IsolateRunMode.currentIsolate`: always current isolate.
-
-### Preferred pattern
+Pass a single argument with `IsolateRunnerMixin.runWithArg`:
 
 ```dart
-// top-level or static function
+final result = await IsolateRunnerMixin.runWithArg<String, int>(
+  myString,
+  (s) => s.length * 42,
+);
+```
+
+### Instance API
+
+Mix into any class and call `runInIsolate`:
+
+```dart
+import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
+
 bool _verify(String data, String sig, String pubKey) {
-  // Verification logic
+  // ... verification logic
   return true;
 }
 
@@ -124,10 +100,28 @@ class MyService with IsolateRunnerMixin {
 }
 ```
 
+Pass a single argument with `runInIsolateWithArg`:
+
+```dart
+Future<int> double(int value) {
+  return runInIsolateWithArg(value, (v) => v * 2);
+}
+```
+
+### Modes
+
+| Mode | Behaviour |
+|------|-----------|
+| `IsolateRunMode.auto` | Background isolate when a `RootIsolateToken` is available, otherwise current isolate. |
+| `IsolateRunMode.alwaysIsolate` | Always background isolate. |
+| `IsolateRunMode.currentIsolate` | Always current isolate (useful for testing). |
+
+---
+
 ## Usage: Persistent Worker
 
-Use a persistent worker when you need many requests over time.
-The handler should be top-level or `static`.
+Use a persistent worker when you need many requests over time. The handler
+**must be top-level or `static`**.
 
 ```dart
 import 'dart:async';
@@ -168,26 +162,26 @@ class MyService with IsolateRunnerMixin {
 
 ### Worker lifecycle
 
-- `spawnWorker` is idempotent.
-- If startup is in progress, other `spawnWorker` calls wait for the same startup.
-- `requestWorker` auto-respawns after dispose (if handler was previously registered).
-- Calling `spawnWorker` again with different handler/options restarts the
-  worker with the new configuration.
+- `spawnWorker` is idempotent — safe to call multiple times while running.
+- If startup is already in progress, other `spawnWorker` calls await the same startup.
+- `requestWorker` auto-respawns the worker after dispose (if a handler was previously registered).
+- Calling `spawnWorker` again with a different handler or options restarts the worker with the new configuration.
 - `disposeWorker` must be called when the owner lifecycle ends.
 
 ### Payload contract
 
-`requestWorker` payloads and worker results must be sendable by this package
-contract:
+`requestWorker` payloads and worker results must be one of:
 
 - `null`, `bool`, `num`, `String`
-- `List`/`Map` (containing supported values)
+- `List` / `Map` (containing supported types, no circular references)
 - `TransferableTypedData`
 - `SendPort`
 
-Custom classes are not accepted directly. Convert to `Map`/`List`.
+Custom classes are not accepted directly — convert to `Map` / `List` first.
 
-### Flutter Lifecycle Example
+---
+
+## Flutter Lifecycle Example
 
 ```dart
 import 'dart:async';
@@ -211,29 +205,51 @@ class _MyState extends State<MyWidget> with IsolateRunnerMixin {
 
 In debug mode, the package prints a warning if `disposeWorker` is missed.
 
+---
+
+## Rules for reliable usage
+
+1. Keep heavy work inside the callback body.
+2. Prefer top-level or `static` functions for isolate/worker code.
+3. Send only supported payload/result types (see payload contract above).
+4. No circular references in payloads — they are rejected before sending.
+5. If you use `spawnWorker`, call `disposeWorker()` in your owner lifecycle.
+
+---
+
 ## Common mistakes
 
 ```dart
-// Wrong: heavyCalc runs on main isolate before runInIsolate is called.
+// ✗ Wrong: heavyCalc runs on the main isolate before runInIsolate is called.
 final value = heavyCalc();
 await runInIsolate(() => value);
 ```
 
 ```dart
-// Correct: heavyCalc runs in the target isolate.
+// ✓ Correct: heavyCalc runs in the target isolate.
 await runInIsolate(() => heavyCalc());
 ```
 
 ```dart
-// Wrong: custom class is not directly sendable as request payload.
+// ✗ Wrong: custom class is not directly sendable as request payload.
 await requestWorker(command: 'save', payload: MyModel(...));
 ```
 
 ```dart
-// Correct: convert to map/list first.
+// ✓ Correct: convert to map/list first.
 await requestWorker(command: 'save', payload: myModel.toJson());
 ```
 
+```dart
+// ✗ Wrong: circular reference is rejected (not sendable across isolates).
+final map = <Object?, Object?>{};
+map['self'] = map;
+await requestWorker(command: 'echo', payload: map);
+```
+
+---
+
 ## Example App
 
-For a complete app, see the `example/` directory.
+For a complete app demonstrating all three APIs (static, instance, and persistent
+worker), see the `example/` directory.
