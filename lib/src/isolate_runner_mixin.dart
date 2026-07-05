@@ -182,6 +182,22 @@ Future<T> _isolateEntryPoint<T>(_IsolateTask<T> task) async {
   return await task.task();
 }
 
+Future<T> _runInAutoModeStatic<T>(FutureOr<T> Function() fn) async {
+  final token = RootIsolateToken.instance;
+  if (token == null) {
+    return await Future<T>.sync(fn);
+  }
+  return await _runInBackgroundIsolateStatic(fn, token: token);
+}
+
+Future<T> _runInBackgroundIsolateStatic<T>(
+  FutureOr<T> Function() fn, {
+  RootIsolateToken? token,
+}) async {
+  final task = _IsolateTask<T>(token, fn);
+  return await Isolate.run(() => _isolateEntryPoint(task));
+}
+
 @pragma('vm:entry-point')
 Future<void> _workerIsolateEntryPoint(Object? rawMessage) async {
   final message = rawMessage as Map<Object?, Object?>;
@@ -255,7 +271,7 @@ bool _isAllowedPayload(Object? value, [Set<Object>? seen]) {
   final visited = seen ?? <Object>{};
   if (value is List) {
     if (visited.contains(value)) {
-      return true;
+      return false; // Cycle detected; self-referencing structures are not sendable.
     }
     visited.add(value);
     for (final Object? item in value.cast<Object?>()) {
@@ -268,7 +284,7 @@ bool _isAllowedPayload(Object? value, [Set<Object>? seen]) {
 
   if (value is Map) {
     if (visited.contains(value)) {
-      return true;
+      return false; // Cycle detected; self-referencing structures are not sendable.
     }
     visited.add(value);
     for (final MapEntry<Object?, Object?> entry
@@ -308,6 +324,8 @@ bool _isAllowedPayload(Object? value, [Set<Object>? seen]) {
 /// }
 /// ```
 mixin IsolateRunnerMixin {
+  // Static so the Finalizer outlives any single instance. Each instance uses
+  // its own detach token (_workerLeakDetachToken) for independent lifecycle.
   static final Finalizer<_WorkerLeakTrace>
   _workerLeakFinalizer = Finalizer<_WorkerLeakTrace>((trace) {
     assert(() {
@@ -369,21 +387,8 @@ mixin IsolateRunnerMixin {
     FutureOr<T> Function() fn, {
     IsolateRunMode mode = IsolateRunMode.auto,
     Duration? timeout,
-  }) async {
-    final executionFuture = switch (mode) {
-      IsolateRunMode.currentIsolate => Future<T>.sync(fn),
-      IsolateRunMode.auto => _runInAutoMode(fn),
-      IsolateRunMode.alwaysIsolate => _runInBackgroundIsolate(
-        fn,
-        token: RootIsolateToken.instance,
-      ),
-    };
-
-    if (timeout == null) {
-      return await executionFuture;
-    }
-
-    return await executionFuture.timeout(timeout);
+  }) {
+    return IsolateRunnerMixin.run(fn, mode: mode, timeout: timeout);
   }
 
   /// Convenience wrapper that passes a single argument to [fn].
@@ -394,8 +399,55 @@ mixin IsolateRunnerMixin {
     FutureOr<R> Function(A argument) fn, {
     IsolateRunMode mode = IsolateRunMode.auto,
     Duration? timeout,
-  }) async {
-    return await runInIsolate(() => fn(argument), mode: mode, timeout: timeout);
+  }) {
+    return IsolateRunnerMixin.runWithArg(
+      argument,
+      fn,
+      mode: mode,
+      timeout: timeout,
+    );
+  }
+
+  /// Runs [fn] in a background isolate without requiring a mixin instance.
+  ///
+  /// This is the static counterpart to [runInIsolate]. It is useful for
+  /// one-off calls from code that does not own an [IsolateRunnerMixin].
+  ///
+  /// Execution behavior is controlled with [mode]. If [timeout] is provided,
+  /// a [TimeoutException] is thrown when execution does not complete in time.
+  static Future<T> run<T>(
+    FutureOr<T> Function() fn, {
+    IsolateRunMode mode = IsolateRunMode.auto,
+    Duration? timeout,
+  }) {
+    final Future<T> executionFuture = switch (mode) {
+      IsolateRunMode.currentIsolate => Future<T>.sync(fn),
+      IsolateRunMode.auto => _runInAutoModeStatic(fn),
+      IsolateRunMode.alwaysIsolate => _runInBackgroundIsolateStatic(
+        fn,
+        token: RootIsolateToken.instance,
+      ),
+    };
+    if (timeout == null) return executionFuture;
+    return executionFuture.timeout(timeout);
+  }
+
+  /// Convenience wrapper that passes a single argument to [fn].
+  ///
+  /// This is the static counterpart to [runInIsolateWithArg].
+  ///
+  /// Equivalent to `IsolateRunnerMixin.run(() => fn(argument))`.
+  static Future<R> runWithArg<A, R>(
+    A argument,
+    FutureOr<R> Function(A argument) fn, {
+    IsolateRunMode mode = IsolateRunMode.auto,
+    Duration? timeout,
+  }) {
+    return IsolateRunnerMixin.run(
+      () => fn(argument),
+      mode: mode,
+      timeout: timeout,
+    );
   }
 
   /// Spawns a persistent worker isolate.
@@ -406,20 +458,14 @@ mixin IsolateRunnerMixin {
     required IsolateWorkerHandler handler,
     SpawnWorkerOptions options = const SpawnWorkerOptions(),
   }) async {
-    if (options.maxPendingRequests <= 0) {
-      throw ArgumentError.value(
-        options.maxPendingRequests,
-        'options.maxPendingRequests',
-        'must be greater than zero',
-      );
+    // Wait for any in-flight startup before mutating configuration fields to
+    // avoid a TOCTOU race when concurrent calls supply different handlers.
+    if (_workerState == _WorkerState.starting) {
+      await (_spawnFuture ?? Future<void>.value());
     }
 
     _registeredWorkerHandler = handler;
     _spawnWorkerOptions = options;
-
-    if (_workerState == _WorkerState.starting) {
-      await (_spawnFuture ?? Future<void>.value());
-    }
 
     // If configuration changed, restart so the running worker matches it.
     if (_workerState == _WorkerState.running &&
@@ -427,7 +473,7 @@ mixin IsolateRunnerMixin {
       await disposeWorker();
     }
 
-    await _ensureWorkerSpawned();
+    await _ensureWorkerSpawned(handler: handler, options: options);
   }
 
   /// Sends a request to the spawned worker isolate.
@@ -553,22 +599,7 @@ mixin IsolateRunnerMixin {
     }
   }
 
-  Future<T> _runInAutoMode<T>(FutureOr<T> Function() fn) async {
-    final token = RootIsolateToken.instance;
-    if (token == null) {
-      return await Future<T>.sync(fn);
-    }
 
-    return await _runInBackgroundIsolate(fn, token: token);
-  }
-
-  Future<T> _runInBackgroundIsolate<T>(
-    FutureOr<T> Function() fn, {
-    RootIsolateToken? token,
-  }) async {
-    final task = _IsolateTask<T>(token, fn);
-    return await Isolate.run(() => _isolateEntryPoint(task));
-  }
 
   Future<void> _ensureWorkerReadyForRequest() async {
     if (_workerState == _WorkerState.running) {
@@ -585,40 +616,43 @@ mixin IsolateRunnerMixin {
       );
     }
 
-    await _ensureWorkerSpawned();
+    await _ensureWorkerSpawned(
+      handler: _registeredWorkerHandler!,
+      options: _spawnWorkerOptions,
+    );
   }
 
-  Future<void> _ensureWorkerSpawned() async {
-    if (_workerState == _WorkerState.running) {
-      return;
+  Future<void> _ensureWorkerSpawned({
+    required IsolateWorkerHandler handler,
+    required SpawnWorkerOptions options,
+  }) async {
+    // Loop instead of recursing to safely handle the disposing → stopped
+    // transition without unbounded call-stack growth.
+    while (true) {
+      if (_workerState == _WorkerState.running) return;
+      if (_workerState == _WorkerState.starting) {
+        assert(
+          _spawnFuture != null,
+          '_spawnFuture must be non-null while in starting state.',
+        );
+        await (_spawnFuture ?? Future<void>.value());
+        return;
+      }
+      if (_workerState == _WorkerState.disposing) {
+        await (_disposeFuture ?? Future<void>.value());
+        continue;
+      }
+      break; // _WorkerState.stopped — proceed to spawn.
     }
 
-    if (_workerState == _WorkerState.starting) {
-      await (_spawnFuture ?? Future<void>.value());
-      return;
-    }
-
-    if (_workerState == _WorkerState.disposing) {
-      await (_disposeFuture ?? Future<void>.value());
-      await _ensureWorkerSpawned();
-      return;
-    }
-
-    final handler = _registeredWorkerHandler;
-    if (handler == null) {
-      throw const IsolateWorkerNotInitializedException(
-        'No worker handler registered. Call spawnWorker(handler: ...) first.',
-      );
-    }
-
-    final startupFuture = _spawnWorkerInternal(handler, _spawnWorkerOptions);
+    final startupFuture = _spawnWorkerInternal(handler, options);
     _spawnFuture = startupFuture;
     _workerState = _WorkerState.starting;
     try {
       await startupFuture;
       _workerState = _WorkerState.running;
       _activeWorkerHandler = handler;
-      _activeSpawnWorkerOptions = _spawnWorkerOptions;
+      _activeSpawnWorkerOptions = options;
       _attachWorkerLeakWarning();
     } catch (error) {
       _workerState = _WorkerState.stopped;
@@ -783,8 +817,39 @@ mixin IsolateRunnerMixin {
     _completeStartupError(exception);
     _failPendingRequests(exception);
     _detachWorkerLeakWarning();
-    unawaited(_resetWorkerRuntimeResources());
+
+    // Synchronously sever all references before updating state so that any
+    // concurrent requestWorker call sees a fully clean slate on re-entry.
+    final messageSub = _workerMessageSubscription;
+    final errorSub = _workerErrorSubscription;
+    final exitSub = _workerExitSubscription;
+    final msgPort = _workerMessagePort;
+    final errPort = _workerErrorPort;
+    final exitPort = _workerExitPort;
+    _workerIsolate = null;
+    _workerSendPort = null;
+    _workerMessageSubscription = null;
+    _workerErrorSubscription = null;
+    _workerExitSubscription = null;
+    _workerMessagePort = null;
+    _workerErrorPort = null;
+    _workerExitPort = null;
+    _activeWorkerHandler = null;
+    _activeSpawnWorkerOptions = null;
+
     _workerState = _WorkerState.stopped;
+
+    // Cancel subscriptions and close ports asynchronously (best-effort).
+    unawaited(
+      Future.wait<void>([
+        messageSub?.cancel() ?? Future<void>.value(),
+        errorSub?.cancel() ?? Future<void>.value(),
+        exitSub?.cancel() ?? Future<void>.value(),
+      ]),
+    );
+    msgPort?.close();
+    errPort?.close();
+    exitPort?.close();
   }
 
   void _completeStartupReady() {

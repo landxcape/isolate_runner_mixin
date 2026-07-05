@@ -125,8 +125,8 @@ void main() {
     });
 
     test('rethrows task errors in current isolate mode', () async {
-      expect(
-        () => runner.runInIsolate(
+      await expectLater(
+        runner.runInIsolate(
           _throwsStateError,
           mode: IsolateRunMode.currentIsolate,
         ),
@@ -377,6 +377,103 @@ void main() {
         ),
         throwsA(isA<IsolateWorkerPayloadException>()),
       );
+    });
+
+    test('rejects circular List payload', () async {
+      await runner.spawnWorker(handler: _workerHandler);
+
+      final circular = <Object?>[];
+      circular.add(circular); // self-referencing list
+
+      await expectLater(
+        runner.requestWorker<Object?>(
+          command: 'echo',
+          payload: circular,
+        ),
+        throwsA(isA<IsolateWorkerPayloadException>()),
+      );
+    });
+
+    test('rejects circular Map payload', () async {
+      await runner.spawnWorker(handler: _workerHandler);
+
+      final circular = <Object?, Object?>{};
+      circular['self'] = circular; // self-referencing map
+
+      await expectLater(
+        runner.requestWorker<Object?>(
+          command: 'echo',
+          payload: circular,
+        ),
+        throwsA(isA<IsolateWorkerPayloadException>()),
+      );
+    });
+
+    test('SpawnWorkerOptions throws on zero maxPendingRequests', () {
+      expect(
+        () => SpawnWorkerOptions(maxPendingRequests: 0),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+  });
+
+  group('IsolateRunnerMixin static', () {
+    test('run returns result for synchronous work', () async {
+      final result = await IsolateRunnerMixin.run(() => 42);
+      expect(result, 42);
+    });
+
+    test('run returns result for asynchronous work', () async {
+      final result = await IsolateRunnerMixin.run(_asyncValue);
+      expect(result, 'done');
+    });
+
+    test('run currentIsolate mode executes on current isolate', () async {
+      final mainHash = _currentIsolateHash();
+      final isolateHash = await IsolateRunnerMixin.run(
+        _currentIsolateHash,
+        mode: IsolateRunMode.currentIsolate,
+      );
+      expect(isolateHash, mainHash);
+    });
+
+    test('run alwaysIsolate mode executes on a background isolate', () async {
+      final mainHash = _currentIsolateHash();
+      final isolateHash = await IsolateRunnerMixin.run(
+        _currentIsolateHash,
+        mode: IsolateRunMode.alwaysIsolate,
+      );
+      expect(isolateHash, isNot(mainHash));
+    });
+
+    test('run rethrows task errors', () async {
+      await expectLater(
+        IsolateRunnerMixin.run(
+          _throwsStateError,
+          mode: IsolateRunMode.alwaysIsolate,
+        ),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('run throws TimeoutException when task exceeds timeout', () async {
+      await expectLater(
+        IsolateRunnerMixin.run(
+          _slowTask,
+          mode: IsolateRunMode.alwaysIsolate,
+          timeout: const Duration(milliseconds: 20),
+        ),
+        throwsA(isA<TimeoutException>()),
+      );
+    });
+
+    test('runWithArg passes argument to task', () async {
+      final result = await IsolateRunnerMixin.runWithArg<int, int>(
+        21,
+        _double,
+        mode: IsolateRunMode.alwaysIsolate,
+      );
+      expect(result, 42);
     });
   });
 }
