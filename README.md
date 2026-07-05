@@ -4,13 +4,13 @@ A Flutter mixin for running work off the UI isolate.
 
 It gives you two APIs:
 
-- `runInIsolate` / `IsolateRunnerMixin.run`: one-off work
-- `spawnWorker` + `requestWorker`: long-lived worker isolate
+- `runInIsolate` / `IsolateRunnerMixin.run`: one-off work in a background isolate
+- `spawnWorker` + `requestWorker`: long-lived persistent worker isolate
 
 ## Quick start
 
-- Use `runInIsolate` (or the static `IsolateRunnerMixin.run`) if you only need one background call.
-- Use `spawnWorker` + `requestWorker` if you need many calls over time.
+- Use `runInIsolate` (or the static `IsolateRunnerMixin.run`) for a single background call.
+- Use `spawnWorker` + `requestWorker` for many calls over time (e.g. repeated heavy computation in a service).
 
 **One-off (static — no class needed):**
 
@@ -53,12 +53,11 @@ Run `flutter pub get`.
 ### Static API
 
 Use `IsolateRunnerMixin.run` when you don't want to (or can't) add the mixin to
-a class:
+a class — useful in utility functions, test helpers, or top-level code:
 
 ```dart
 import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
 
-// Works anywhere — top-level, static context, test code, etc.
 final result = await IsolateRunnerMixin.run(
   () => expensiveComputation(data),
   mode: IsolateRunMode.alwaysIsolate,
@@ -66,10 +65,10 @@ final result = await IsolateRunnerMixin.run(
 );
 ```
 
-Pass a single argument with `IsolateRunnerMixin.runWithArg`:
+Pass a single typed argument with `IsolateRunnerMixin.runWithArg`:
 
 ```dart
-final result = await IsolateRunnerMixin.runWithArg<String, int>(
+final length = await IsolateRunnerMixin.runWithArg<String, int>(
   myString,
   (s) => s.length * 42,
 );
@@ -103,28 +102,46 @@ class MyService with IsolateRunnerMixin {
 Pass a single argument with `runInIsolateWithArg`:
 
 ```dart
-Future<int> double(int value) {
+Future<int> doubled(int value) {
   return runInIsolateWithArg(value, (v) => v * 2);
 }
+```
+
+### What the callback receives
+
+You pass a **closure**. The closure body runs in the target isolate — not the
+call site:
+
+```dart
+// ✗ Wrong: _sum(n) runs on the main isolate right now.
+final result = _sum(n);
+await runInIsolate(() => result);
+
+// ✓ Correct: _sum(n) runs inside the background isolate.
+await runInIsolate(() => _sum(n));
 ```
 
 ### Modes
 
 | Mode | Behaviour |
 |------|-----------|
-| `IsolateRunMode.auto` | Background isolate when a `RootIsolateToken` is available, otherwise current isolate. |
-| `IsolateRunMode.alwaysIsolate` | Always background isolate. |
-| `IsolateRunMode.currentIsolate` | Always current isolate (useful for testing). |
+| `IsolateRunMode.auto` | Background isolate when a `RootIsolateToken` is available, otherwise falls back to the current isolate. Default. |
+| `IsolateRunMode.alwaysIsolate` | Always spawns a background isolate. |
+| `IsolateRunMode.currentIsolate` | Always runs on the current isolate (useful for testing). |
 
 ---
 
 ## Usage: Persistent Worker
 
-Use a persistent worker when you need many requests over time. The handler
-**must be top-level or `static`**.
+Use a persistent worker when you need many requests over time. Requests are
+processed **sequentially** — the worker handles one command at a time in the
+order they are received.
+
+The handler **must be a top-level or `static` function**:
 
 ```dart
 import 'dart:async';
+import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
 
 FutureOr<Object?> workerHandler(String command, Object? payload) async {
   switch (command) {
@@ -146,13 +163,22 @@ class MyService with IsolateRunnerMixin {
   Future<void> init() async {
     await spawnWorker(
       handler: workerHandler,
-      options: const SpawnWorkerOptions(maxPendingRequests: 500),
+      options: const SpawnWorkerOptions(
+        maxPendingRequests: 500,        // queue overflow protection
+        startupTimeout: Duration(seconds: 10), // optional startup deadline
+      ),
     );
   }
 
   Future<int> doubleValue(int input) {
-    return requestWorker<int>(command: 'double', payload: input);
+    return requestWorker<int>(
+      command: 'double',
+      payload: input,
+      timeout: const Duration(seconds: 5), // optional per-request deadline
+    );
   }
+
+  bool get workerAlive => isWorkerRunning;
 
   Future<void> dispose() async {
     await disposeWorker();
@@ -163,21 +189,52 @@ class MyService with IsolateRunnerMixin {
 ### Worker lifecycle
 
 - `spawnWorker` is idempotent — safe to call multiple times while running.
-- If startup is already in progress, other `spawnWorker` calls await the same startup.
-- `requestWorker` auto-respawns the worker after dispose (if a handler was previously registered).
-- Calling `spawnWorker` again with a different handler or options restarts the worker with the new configuration.
-- `disposeWorker` must be called when the owner lifecycle ends.
+- If startup is already in progress, other `spawnWorker` calls await the same startup future.
+- Calling `spawnWorker` again with a different `handler` or `options` restarts the worker with the new configuration.
+- `requestWorker` auto-respawns the worker after a dispose if a handler was previously registered.
+- `isWorkerRunning` returns `true` when the worker isolate is alive.
+- `disposeWorker` must be called when the owner lifecycle ends. Pending requests are failed with `IsolateWorkerDisposedException`.
 
 ### Payload contract
 
 `requestWorker` payloads and worker results must be one of:
 
 - `null`, `bool`, `num`, `String`
-- `List` / `Map` (containing supported types, no circular references)
+- `List` / `Map` (recursively containing supported types — no circular references)
 - `TransferableTypedData`
 - `SendPort`
 
 Custom classes are not accepted directly — convert to `Map` / `List` first.
+Circular references are detected and rejected before sending.
+
+### Error handling
+
+```dart
+try {
+  final result = await service.requestWorker<int>(command: 'double', payload: 5);
+} on IsolateWorkerRemoteException catch (e) {
+  // The handler threw inside the worker isolate.
+  print('Command "${e.command}" failed: ${e.remoteError}');
+  print(e.remoteStackTrace);
+} on IsolateWorkerDisposedException catch (_) {
+  // disposeWorker() was called while this request was pending.
+} on IsolateWorkerQueueOverflowException catch (_) {
+  // Too many pending requests — exceeded maxPendingRequests.
+} on IsolateWorkerTerminatedException catch (_) {
+  // The worker isolate crashed unexpectedly.
+} on TimeoutException catch (_) {
+  // Per-request timeout elapsed.
+}
+```
+
+All exceptions extend `IsolateWorkerException`, so you can catch the base type
+for a broad handler:
+
+```dart
+} on IsolateWorkerException catch (e) {
+  print('Worker error: $e');
+}
+```
 
 ---
 
@@ -188,11 +245,15 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
 
+FutureOr<Object?> _workerHandler(String command, Object? payload) async {
+  // ... handle commands
+}
+
 class _MyState extends State<MyWidget> with IsolateRunnerMixin {
   @override
   void initState() {
     super.initState();
-    spawnWorker(handler: workerHandler);
+    spawnWorker(handler: _workerHandler);
   }
 
   @override
@@ -209,7 +270,7 @@ In debug mode, the package prints a warning if `disposeWorker` is missed.
 
 ## Rules for reliable usage
 
-1. Keep heavy work inside the callback body.
+1. Keep heavy work **inside** the callback body — work done before the callback runs on the main isolate.
 2. Prefer top-level or `static` functions for isolate/worker code.
 3. Send only supported payload/result types (see payload contract above).
 4. No circular references in payloads — they are rejected before sending.
