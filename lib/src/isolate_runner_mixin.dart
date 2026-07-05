@@ -599,8 +599,6 @@ mixin IsolateRunnerMixin {
     }
   }
 
-
-
   Future<void> _ensureWorkerReadyForRequest() async {
     if (_workerState == _WorkerState.running) {
       return;

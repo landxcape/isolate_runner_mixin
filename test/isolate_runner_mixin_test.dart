@@ -386,10 +386,7 @@ void main() {
       circular.add(circular); // self-referencing list
 
       await expectLater(
-        runner.requestWorker<Object?>(
-          command: 'echo',
-          payload: circular,
-        ),
+        runner.requestWorker<Object?>(command: 'echo', payload: circular),
         throwsA(isA<IsolateWorkerPayloadException>()),
       );
     });
@@ -401,10 +398,7 @@ void main() {
       circular['self'] = circular; // self-referencing map
 
       await expectLater(
-        runner.requestWorker<Object?>(
-          command: 'echo',
-          payload: circular,
-        ),
+        runner.requestWorker<Object?>(command: 'echo', payload: circular),
         throwsA(isA<IsolateWorkerPayloadException>()),
       );
     });

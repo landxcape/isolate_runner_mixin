@@ -192,7 +192,8 @@ class _HomePageState extends State<_HomePage> {
           _DemoCard(
             title: 'Persistent Worker',
             subtitle: 'spawnWorker + requestWorker (3 concurrent requests)',
-            code: 'await spawnWorker(handler: _workerHandler);\n'
+            code:
+                'await spawnWorker(handler: _workerHandler);\n'
                 'await Future.wait([requestWorker(...), requestWorker(...), ...]);',
             result: _workerResult,
             running: _workerRunning,
@@ -250,10 +251,7 @@ class _DemoCard extends StatelessWidget {
               ),
               child: Text(
                 code,
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                ),
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
               ),
             ),
             const SizedBox(height: 12),
@@ -274,7 +272,11 @@ class _DemoCard extends StatelessWidget {
                   Expanded(
                     child: Text(
                       result,
-                      style: TextStyle(color: cs.primary, fontFamily: 'monospace', fontSize: 12),
+                      style: TextStyle(
+                        color: cs.primary,
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                      ),
                     ),
                   ),
               ],
