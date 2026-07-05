@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.4.0 - Static API & Bug Fixes
+
+**New**
+
+* Added `IsolateRunnerMixin.run<T>()` — static counterpart to `runInIsolate`, usable
+  without a mixin instance.
+* Added `IsolateRunnerMixin.runWithArg<A, R>()` — static counterpart to
+  `runInIsolateWithArg`.
+* `runInIsolate` and `runInIsolateWithArg` now delegate to the static methods,
+  making all execution logic share a single code path.
+
+**Bug Fixes**
+
+* Fixed TOCTOU race in `spawnWorker`: configuration fields are now written only
+  after any in-flight startup completes, preventing handler corruption on concurrent
+  calls with different handlers.
+* Fixed recursive `_ensureWorkerSpawned` in the disposing branch: replaced the
+  unbounded tail-recursive call with an explicit `while` loop.
+* Fixed teardown race in `_handleWorkerTermination`: all port and subscription
+  references are now nulled synchronously before the state is updated to `stopped`,
+  preventing premature re-spawn attempts during async cleanup.
+* Fixed `_isAllowedPayload` incorrectly returning `true` for self-referencing
+  `List` and `Map` structures — such cycles are not sendable across isolate
+  boundaries and now correctly return `false`.
+
+**Improvements**
+
+* Removed dead `maxPendingRequests` guard in `spawnWorker` (superseded by the
+  `assert` in `SpawnWorkerOptions`).
+* Added `assert(_spawnFuture != null)` guard to catch invariant violations in
+  the `starting` state during debug builds.
+* Added clarifying comment on `static _workerLeakFinalizer` explaining per-instance
+  detach token design.
+* Removed `prefer_relative_imports` lint rule (conflicts with pub.dev package
+  best practices).
+* Added `topics` to `pubspec.yaml` for better pub.dev discoverability.
+
 ## 0.3.0 - Spawn Worker Lifecycle
 
 * Added persistent spawned-worker APIs: `spawnWorker`, `requestWorker`,
