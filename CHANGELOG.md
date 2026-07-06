@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1 - Documentation & Formatting Patch
+
+* Applied `dart format` to all source files (fixes pub.dev static-analysis
+  score for the 0.4.0 release).
+* Expanded README: added error-handling section documenting all six exception
+  types, noted worker sequential-processing behaviour, documented
+  `SpawnWorkerOptions.startupTimeout` and the per-request `timeout` parameter,
+  added `isWorkerRunning` to the lifecycle summary, and fixed minor example
+  issues (missing handler definition in Flutter lifecycle snippet, method name
+  shadowing `dart:core double`).
+
 ## 0.4.0 - Static API & Bug Fixes
 
 **New**
