@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 - Reverted Static API (Breaking)
+
+* **Breaking**: Removed `IsolateRunnerMixin.run` and `IsolateRunnerMixin.runWithArg`
+  static methods. This preserves the package's core identity as a mixin and prevents
+  architectural dilution.
+* Restored standard instance-based runner implementation as the sole one-off mechanism.
+
 ## 0.4.1 - Documentation & Formatting Patch
 
 * Applied `dart format` to all source files (fixes pub.dev static-analysis

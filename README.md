@@ -4,15 +4,15 @@ A Flutter mixin for running work off the UI isolate.
 
 It gives you two APIs:
 
-- `runInIsolate` / `IsolateRunnerMixin.run`: one-off work in a background isolate
+- `runInIsolate`: one-off work in a background isolate
 - `spawnWorker` + `requestWorker`: long-lived persistent worker isolate
 
 ## Quick start
 
-- Use `runInIsolate` (or the static `IsolateRunnerMixin.run`) for a single background call.
+- Use `runInIsolate` for a single background call.
 - Use `spawnWorker` + `requestWorker` for many calls over time (e.g. repeated heavy computation in a service).
 
-**One-off (static — no class needed):**
+**One-off (via mixin instance):**
 
 ```dart
 import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
@@ -23,13 +23,6 @@ int _sum(int n) {
   return total;
 }
 
-// Call directly, anywhere — no class or mixin instance required.
-final result = await IsolateRunnerMixin.run(() => _sum(50000000));
-```
-
-**One-off (via mixin instance):**
-
-```dart
 class MyService with IsolateRunnerMixin {
   Future<int> compute(int n) {
     return runInIsolate(() => _sum(n));
@@ -49,30 +42,6 @@ Run `flutter pub get`.
 ---
 
 ## Usage: One-Off Tasks
-
-### Static API
-
-Use `IsolateRunnerMixin.run` when you don't want to (or can't) add the mixin to
-a class — useful in utility functions, test helpers, or top-level code:
-
-```dart
-import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
-
-final result = await IsolateRunnerMixin.run(
-  () => expensiveComputation(data),
-  mode: IsolateRunMode.alwaysIsolate,
-  timeout: const Duration(seconds: 5),
-);
-```
-
-Pass a single typed argument with `IsolateRunnerMixin.runWithArg`:
-
-```dart
-final length = await IsolateRunnerMixin.runWithArg<String, int>(
-  myString,
-  (s) => s.length * 42,
-);
-```
 
 ### Instance API
 
@@ -312,5 +281,4 @@ await requestWorker(command: 'echo', payload: map);
 
 ## Example App
 
-For a complete app demonstrating all three APIs (static, instance, and persistent
-worker), see the `example/` directory.
+For a complete app demonstrating both one-off (instance API) and persistent worker patterns, see the `example/` directory.

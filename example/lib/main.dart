@@ -77,34 +77,11 @@ class _HomePage extends StatefulWidget {
 class _HomePageState extends State<_HomePage> {
   final _service = ComputeService();
 
-  String _staticResult = '—';
   String _instanceResult = '—';
   String _workerResult = '—';
 
-  bool _staticRunning = false;
   bool _instanceRunning = false;
   bool _workerRunning = false;
-
-  // ── Static API demo ────────────────────────────────────────────────────────
-
-  Future<void> _runStatic() async {
-    setState(() {
-      _staticRunning = true;
-      _staticResult = 'Computing…';
-    });
-    try {
-      // No class or mixin instance needed — just call the static method.
-      final result = await IsolateRunnerMixin.run(
-        () => _sumUpTo(50000000),
-        mode: IsolateRunMode.alwaysIsolate,
-      );
-      setState(() => _staticResult = 'sum(50M) = $result');
-    } catch (e) {
-      setState(() => _staticResult = 'Error: $e');
-    } finally {
-      setState(() => _staticRunning = false);
-    }
-  }
 
   // ── Instance API demo ──────────────────────────────────────────────────────
 
@@ -171,15 +148,6 @@ class _HomePageState extends State<_HomePage> {
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          _DemoCard(
-            title: 'Static API',
-            subtitle: 'IsolateRunnerMixin.run() — no class needed',
-            code: 'await IsolateRunnerMixin.run(() => _sumUpTo(50000000));',
-            result: _staticResult,
-            running: _staticRunning,
-            onRun: _runStatic,
-          ),
-          const SizedBox(height: 16),
           _DemoCard(
             title: 'Instance API',
             subtitle: 'class Service with IsolateRunnerMixin',

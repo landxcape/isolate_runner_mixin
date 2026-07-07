@@ -182,22 +182,6 @@ Future<T> _isolateEntryPoint<T>(_IsolateTask<T> task) async {
   return await task.task();
 }
 
-Future<T> _runInAutoModeStatic<T>(FutureOr<T> Function() fn) async {
-  final token = RootIsolateToken.instance;
-  if (token == null) {
-    return await Future<T>.sync(fn);
-  }
-  return await _runInBackgroundIsolateStatic(fn, token: token);
-}
-
-Future<T> _runInBackgroundIsolateStatic<T>(
-  FutureOr<T> Function() fn, {
-  RootIsolateToken? token,
-}) async {
-  final task = _IsolateTask<T>(token, fn);
-  return await Isolate.run(() => _isolateEntryPoint(task));
-}
-
 @pragma('vm:entry-point')
 Future<void> _workerIsolateEntryPoint(Object? rawMessage) async {
   final message = rawMessage as Map<Object?, Object?>;
@@ -387,8 +371,21 @@ mixin IsolateRunnerMixin {
     FutureOr<T> Function() fn, {
     IsolateRunMode mode = IsolateRunMode.auto,
     Duration? timeout,
-  }) {
-    return IsolateRunnerMixin.run(fn, mode: mode, timeout: timeout);
+  }) async {
+    final executionFuture = switch (mode) {
+      IsolateRunMode.currentIsolate => Future<T>.sync(fn),
+      IsolateRunMode.auto => _runInAutoMode(fn),
+      IsolateRunMode.alwaysIsolate => _runInBackgroundIsolate(
+        fn,
+        token: RootIsolateToken.instance,
+      ),
+    };
+
+    if (timeout == null) {
+      return await executionFuture;
+    }
+
+    return await executionFuture.timeout(timeout);
   }
 
   /// Convenience wrapper that passes a single argument to [fn].
@@ -399,55 +396,8 @@ mixin IsolateRunnerMixin {
     FutureOr<R> Function(A argument) fn, {
     IsolateRunMode mode = IsolateRunMode.auto,
     Duration? timeout,
-  }) {
-    return IsolateRunnerMixin.runWithArg(
-      argument,
-      fn,
-      mode: mode,
-      timeout: timeout,
-    );
-  }
-
-  /// Runs [fn] in a background isolate without requiring a mixin instance.
-  ///
-  /// This is the static counterpart to [runInIsolate]. It is useful for
-  /// one-off calls from code that does not own an [IsolateRunnerMixin].
-  ///
-  /// Execution behavior is controlled with [mode]. If [timeout] is provided,
-  /// a [TimeoutException] is thrown when execution does not complete in time.
-  static Future<T> run<T>(
-    FutureOr<T> Function() fn, {
-    IsolateRunMode mode = IsolateRunMode.auto,
-    Duration? timeout,
-  }) {
-    final Future<T> executionFuture = switch (mode) {
-      IsolateRunMode.currentIsolate => Future<T>.sync(fn),
-      IsolateRunMode.auto => _runInAutoModeStatic(fn),
-      IsolateRunMode.alwaysIsolate => _runInBackgroundIsolateStatic(
-        fn,
-        token: RootIsolateToken.instance,
-      ),
-    };
-    if (timeout == null) return executionFuture;
-    return executionFuture.timeout(timeout);
-  }
-
-  /// Convenience wrapper that passes a single argument to [fn].
-  ///
-  /// This is the static counterpart to [runInIsolateWithArg].
-  ///
-  /// Equivalent to `IsolateRunnerMixin.run(() => fn(argument))`.
-  static Future<R> runWithArg<A, R>(
-    A argument,
-    FutureOr<R> Function(A argument) fn, {
-    IsolateRunMode mode = IsolateRunMode.auto,
-    Duration? timeout,
-  }) {
-    return IsolateRunnerMixin.run(
-      () => fn(argument),
-      mode: mode,
-      timeout: timeout,
-    );
+  }) async {
+    return await runInIsolate(() => fn(argument), mode: mode, timeout: timeout);
   }
 
   /// Spawns a persistent worker isolate.
@@ -597,6 +547,23 @@ mixin IsolateRunnerMixin {
         disposeCompleter.complete();
       }
     }
+  }
+
+  Future<T> _runInAutoMode<T>(FutureOr<T> Function() fn) async {
+    final token = RootIsolateToken.instance;
+    if (token == null) {
+      return await Future<T>.sync(fn);
+    }
+
+    return await _runInBackgroundIsolate(fn, token: token);
+  }
+
+  Future<T> _runInBackgroundIsolate<T>(
+    FutureOr<T> Function() fn, {
+    RootIsolateToken? token,
+  }) async {
+    final task = _IsolateTask<T>(token, fn);
+    return await Isolate.run(() => _isolateEntryPoint(task));
   }
 
   Future<void> _ensureWorkerReadyForRequest() async {
