@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1
+
+* Added `repository` and `issue_tracker` links for pub.dev verification.
+* Cleaned up deprecated keywords and added 5th topic `compute`.
+* Added `.pubignore` to prevent bundling build caches and temporary files.
+
 ## 0.5.0 - Reverted Static API (Breaking)
 
 * **Breaking**: Removed `IsolateRunnerMixin.run` and `IsolateRunnerMixin.runWithArg`
