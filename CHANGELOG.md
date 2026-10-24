@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.2
+
+* Feat: Added conditional Web and WebAssembly (WASM) runtime support via event-loop fallback and microtask yielding.
+* Refactor: Split native isolate implementation and web runner behind `dart.library.isolate` conditional exports.
+* Docs: Refreshed README with platform badges, Web/WASM runtime behavior, and floating install instructions.
+* Test: Added web runner unit tests verifying event-loop execution and exception contract parity.
+
 ## 0.5.1
 
 * Added `repository` and `issue_tracker` links for pub.dev verification.

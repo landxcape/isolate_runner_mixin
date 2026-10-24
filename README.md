@@ -1,153 +1,118 @@
 # isolate_runner_mixin
 
-A Flutter mixin for running work off the UI isolate.
+A Flutter-aware mixin for offloading CPU-intensive tasks and managing persistent background workers with seamless Web and WebAssembly (WASM) fallback.
 
-It gives you two APIs:
+[![pub package](https://img.shields.io/pub/v/isolate_runner_mixin.svg)](https://pub.dev/packages/isolate_runner_mixin)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-flutter%20%7C%20android%20%7C%20ios%20%7C%20web%20%7C%20macos%20%7C%20linux%20%7C%20windows-blue)](https://pub.dev/packages/isolate_runner_mixin)
 
-- `runInIsolate`: one-off work in a background isolate
-- `spawnWorker` + `requestWorker`: long-lived persistent worker isolate
+`isolate_runner_mixin` provides two core execution patterns for Flutter applications:
+1. **One-Off Tasks (`runInIsolate`)**: Execute isolated computation with automatic `RootIsolateToken` propagation for Flutter platform plugins.
+2. **Persistent Workers (`spawnWorker` + `requestWorker`)**: Long-lived background isolate with bi-directional message routing, payload validation, startup timeouts, and lifecycle management.
 
-## Quick start
+## Features
 
-- Use `runInIsolate` for a single background call.
-- Use `spawnWorker` + `requestWorker` for many calls over time (e.g. repeated heavy computation in a service).
+- **Background Plugin Support**: Automatically registers `BackgroundIsolateBinaryMessenger` so Flutter plugins work seamlessly inside background isolates.
+- **Cross-Platform & WASM Ready**: On Native (Android, iOS, macOS, Windows, Linux), executes in dedicated multi-threaded OS isolates. On Web and WebAssembly (WASM), transparently falls back to cooperative event-loop scheduling with microtask yields, guaranteeing 100% API parity with zero platform compilation blockers.
+- **Sequential Persistent Worker**: Spawn a worker once and dispatch multiple requests sequentially over dedicated send/receive ports.
+- **Robust Failure Domain**: Centralized exception hierarchy (`IsolateWorkerException`) catching crashes, timeouts, circular payload references, and disposal aborts cleanly.
+- **Memory Leak Protection**: Integrated debug-mode `Finalizer` tracking active worker isolates and warning when `disposeWorker()` is omitted in stateful lifecycles.
 
-**One-off (via mixin instance):**
+## Installation
+
+Add via CLI:
+
+```bash
+flutter pub add isolate_runner_mixin
+```
+
+Or add to your `pubspec.yaml`:
+
+```yaml
+dependencies:
+  isolate_runner_mixin: ^<latest>
+```
+
+---
+
+## Quick Start
+
+### 1. One-Off Tasks (`runInIsolate`)
+
+Mix into any class, service, or widget state:
 
 ```dart
 import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
 
-int _sum(int n) {
+int _heavySum(int n) {
   var total = 0;
   for (var i = 0; i < n; i++) total += i;
   return total;
 }
 
-class MyService with IsolateRunnerMixin {
-  Future<int> compute(int n) {
-    return runInIsolate(() => _sum(n));
+class CalculationService with IsolateRunnerMixin {
+  Future<int> computeTotal(int n) {
+    return runInIsolate(() => _heavySum(n));
+  }
+
+  // Single-argument convenience:
+  Future<int> computeWithArg(int n) {
+    return runInIsolateWithArg(n, _heavySum);
   }
 }
 ```
 
-## Installation
+#### Execution Modes
 
-```yaml
-dependencies:
-  isolate_runner_mixin: <latest_version>
-```
-
-Run `flutter pub get`.
-
----
-
-## Usage: One-Off Tasks
-
-### Instance API
-
-Mix into any class and call `runInIsolate`:
-
-```dart
-import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
-
-bool _verify(String data, String sig, String pubKey) {
-  // ... verification logic
-  return true;
-}
-
-class MyService with IsolateRunnerMixin {
-  final String publicKey;
-  MyService(this.publicKey);
-
-  Future<bool> verify(String data, String signature) {
-    return runInIsolate(
-      () => _verify(data, signature, publicKey),
-      mode: IsolateRunMode.alwaysIsolate,
-    );
-  }
-}
-```
-
-Pass a single argument with `runInIsolateWithArg`:
-
-```dart
-Future<int> doubled(int value) {
-  return runInIsolateWithArg(value, (v) => v * 2);
-}
-```
-
-### What the callback receives
-
-You pass a **closure**. The closure body runs in the target isolate — not the
-call site:
-
-```dart
-// ✗ Wrong: _sum(n) runs on the main isolate right now.
-final result = _sum(n);
-await runInIsolate(() => result);
-
-// ✓ Correct: _sum(n) runs inside the background isolate.
-await runInIsolate(() => _sum(n));
-```
-
-### Modes
-
-| Mode | Behaviour |
-|------|-----------|
-| `IsolateRunMode.auto` | Background isolate when a `RootIsolateToken` is available, otherwise falls back to the current isolate. Default. |
+| Mode | Behavior |
+| :--- | :--- |
+| `IsolateRunMode.auto` | Uses background isolate when a `RootIsolateToken` is available; otherwise falls back to current isolate. *(Default)* |
 | `IsolateRunMode.alwaysIsolate` | Always spawns a background isolate. |
-| `IsolateRunMode.currentIsolate` | Always runs on the current isolate (useful for testing). |
+| `IsolateRunMode.currentIsolate` | Executes synchronously on the current isolate (ideal for test environments). |
 
 ---
 
-## Usage: Persistent Worker
+### 2. Persistent Worker (`spawnWorker` & `requestWorker`)
 
-Use a persistent worker when you need many requests over time. Requests are
-processed **sequentially** — the worker handles one command at a time in the
-order they are received.
+Use a persistent worker when processing repeated requests over time. Requests are processed **sequentially** in FIFO order.
 
-The handler **must be a top-level or `static` function**:
+The handler must be a **top-level or `static` function**:
 
 ```dart
 import 'dart:async';
 import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
 
-FutureOr<Object?> workerHandler(String command, Object? payload) async {
+FutureOr<Object?> cryptoWorkerHandler(String command, Object? payload) async {
   switch (command) {
-    case 'double':
-      return (payload as int) * 2;
-    case 'delayEcho':
-      final map = payload as Map<Object?, Object?>;
-      await Future<void>.delayed(Duration(milliseconds: map['delayMs'] as int));
-      return map['value'];
+    case 'hash':
+      final text = payload as String;
+      // Perform CPU-intensive hashing...
+      return text.hashCode.toString();
+    case 'transform':
+      final list = payload as List<Object?>;
+      return list.map((e) => (e as int) * 2).toList();
   }
   throw UnsupportedError('Unknown command: $command');
 }
-```
 
-Initialize once, then send requests:
-
-```dart
-class MyService with IsolateRunnerMixin {
+class CryptoRepository with IsolateRunnerMixin {
   Future<void> init() async {
     await spawnWorker(
-      handler: workerHandler,
+      handler: cryptoWorkerHandler,
       options: const SpawnWorkerOptions(
-        maxPendingRequests: 500,        // queue overflow protection
-        startupTimeout: Duration(seconds: 10), // optional startup deadline
+        maxPendingRequests: 1000,
+        startupTimeout: Duration(seconds: 10),
       ),
     );
   }
 
-  Future<int> doubleValue(int input) {
-    return requestWorker<int>(
-      command: 'double',
-      payload: input,
-      timeout: const Duration(seconds: 5), // optional per-request deadline
+  Future<String> hashText(String text) {
+    return requestWorker<String>(
+      command: 'hash',
+      payload: text,
+      timeout: const Duration(seconds: 5),
     );
   }
-
-  bool get workerAlive => isWorkerRunning;
 
   Future<void> dispose() async {
     await disposeWorker();
@@ -155,130 +120,48 @@ class MyService with IsolateRunnerMixin {
 }
 ```
 
-### Worker lifecycle
+---
 
-- `spawnWorker` is idempotent — safe to call multiple times while running.
-- If startup is already in progress, other `spawnWorker` calls await the same startup future.
-- Calling `spawnWorker` again with a different `handler` or `options` restarts the worker with the new configuration.
-- `requestWorker` auto-respawns the worker after a dispose if a handler was previously registered.
-- `isWorkerRunning` returns `true` when the worker isolate is alive.
-- `disposeWorker` must be called when the owner lifecycle ends. Pending requests are failed with `IsolateWorkerDisposedException`.
+## Web & WebAssembly (WASM) Architecture
 
-### Payload contract
+On Flutter Web and WebAssembly, `dart:isolate` primitives are unavailable. `isolate_runner_mixin` employs conditional compilation:
 
-`requestWorker` payloads and worker results must be one of:
+- **Native Targets**: Spawns true multi-threaded `dart:isolate` instances with `ReceivePort` and `SendPort` streams.
+- **Web & WASM Targets**: Uses a cooperative event-loop worker that yields via `Future.delayed(Duration.zero)` and `scheduleMicrotask`, preventing main-thread UI jank while executing the identical `IsolateWorkerHandler` logic.
+- **100% Parity**: Payload contract verification, exceptions (`IsolateWorkerRemoteException`, `IsolateWorkerPayloadException`), and disposal lifecycles behave identically across all platforms.
 
+---
+
+## Payload Contract
+
+`requestWorker` payloads and return values must satisfy the isolate transport contract:
 - `null`, `bool`, `num`, `String`
-- `List` / `Map` (recursively containing supported types — no circular references)
+- `List` and `Map` containing recursively supported types (no circular references)
 - `TransferableTypedData`
 - `SendPort`
 
-Custom classes are not accepted directly — convert to `Map` / `List` first.
-Circular references are detected and rejected before sending.
+Circular references and unregistered complex objects are detected and rejected prior to dispatch.
 
-### Error handling
+---
+
+## Exception Handling
+
+All worker exceptions inherit from `IsolateWorkerException`:
 
 ```dart
 try {
-  final result = await service.requestWorker<int>(command: 'double', payload: 5);
+  final result = await service.requestWorker<String>(command: 'hash', payload: data);
 } on IsolateWorkerRemoteException catch (e) {
-  // The handler threw inside the worker isolate.
+  // Thrown if the handler threw inside the worker isolate:
   print('Command "${e.command}" failed: ${e.remoteError}');
   print(e.remoteStackTrace);
 } on IsolateWorkerDisposedException catch (_) {
-  // disposeWorker() was called while this request was pending.
+  // Thrown if disposeWorker() was called while request was pending.
 } on IsolateWorkerQueueOverflowException catch (_) {
-  // Too many pending requests — exceeded maxPendingRequests.
-} on IsolateWorkerTerminatedException catch (_) {
-  // The worker isolate crashed unexpectedly.
+  // Thrown if pending requests exceed SpawnWorkerOptions.maxPendingRequests.
+} on IsolateWorkerTerminatedException catch (e) {
+  // Thrown if worker isolate terminated unexpectedly.
 } on TimeoutException catch (_) {
-  // Per-request timeout elapsed.
+  // Thrown if per-request deadline elapsed.
 }
 ```
-
-All exceptions extend `IsolateWorkerException`, so you can catch the base type
-for a broad handler:
-
-```dart
-} on IsolateWorkerException catch (e) {
-  print('Worker error: $e');
-}
-```
-
----
-
-## Flutter Lifecycle Example
-
-```dart
-import 'dart:async';
-import 'package:flutter/widgets.dart';
-import 'package:isolate_runner_mixin/isolate_runner_mixin.dart';
-
-FutureOr<Object?> _workerHandler(String command, Object? payload) async {
-  // ... handle commands
-}
-
-class _MyState extends State<MyWidget> with IsolateRunnerMixin {
-  @override
-  void initState() {
-    super.initState();
-    spawnWorker(handler: _workerHandler);
-  }
-
-  @override
-  void dispose() {
-    unawaited(disposeWorker());
-    super.dispose();
-  }
-}
-```
-
-In debug mode, the package prints a warning if `disposeWorker` is missed.
-
----
-
-## Rules for reliable usage
-
-1. Keep heavy work **inside** the callback body — work done before the callback runs on the main isolate.
-2. Prefer top-level or `static` functions for isolate/worker code.
-3. Send only supported payload/result types (see payload contract above).
-4. No circular references in payloads — they are rejected before sending.
-5. If you use `spawnWorker`, call `disposeWorker()` in your owner lifecycle.
-
----
-
-## Common mistakes
-
-```dart
-// ✗ Wrong: heavyCalc runs on the main isolate before runInIsolate is called.
-final value = heavyCalc();
-await runInIsolate(() => value);
-```
-
-```dart
-// ✓ Correct: heavyCalc runs in the target isolate.
-await runInIsolate(() => heavyCalc());
-```
-
-```dart
-// ✗ Wrong: custom class is not directly sendable as request payload.
-await requestWorker(command: 'save', payload: MyModel(...));
-```
-
-```dart
-// ✓ Correct: convert to map/list first.
-await requestWorker(command: 'save', payload: myModel.toJson());
-```
-
-```dart
-// ✗ Wrong: circular reference is rejected (not sendable across isolates).
-final map = <Object?, Object?>{};
-map['self'] = map;
-await requestWorker(command: 'echo', payload: map);
-```
-
----
-
-## Example App
-
-For a complete app demonstrating both one-off (instance API) and persistent worker patterns, see the `example/` directory.
