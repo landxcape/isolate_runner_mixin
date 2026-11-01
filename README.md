@@ -5,10 +5,13 @@ A Flutter-aware mixin for offloading CPU-intensive tasks and managing persistent
 [![pub package](https://img.shields.io/pub/v/isolate_runner_mixin.svg)](https://pub.dev/packages/isolate_runner_mixin)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-flutter%20%7C%20android%20%7C%20ios%20%7C%20web%20%7C%20macos%20%7C%20linux%20%7C%20windows-blue)](https://pub.dev/packages/isolate_runner_mixin)
+[![Interactive Sandbox](https://img.shields.io/badge/demo-interactive%20sandbox-0284C7.svg)](https://shakyapurna.com.np/#/lab/isolate_runner_mixin/sandbox)
 
 `isolate_runner_mixin` provides two core execution patterns for Flutter applications:
 1. **One-Off Tasks (`runInIsolate`)**: Execute isolated computation with automatic `RootIsolateToken` propagation for Flutter platform plugins.
 2. **Persistent Workers (`spawnWorker` + `requestWorker`)**: Long-lived background isolate with bi-directional message routing, payload validation, startup timeouts, and lifecycle management.
+
+An [interactive sandbox](https://shakyapurna.com.np/#/lab/isolate_runner_mixin/sandbox) is available to benchmark isolate dispatch throughput and test one-off vs. persistent workers in the browser.
 
 ## Features
 
@@ -20,17 +23,10 @@ A Flutter-aware mixin for offloading CPU-intensive tasks and managing persistent
 
 ## Installation
 
-Add via CLI:
+Add the package to your project:
 
 ```bash
 flutter pub add isolate_runner_mixin
-```
-
-Or add to your `pubspec.yaml`:
-
-```yaml
-dependencies:
-  isolate_runner_mixin: ^<latest>
 ```
 
 ---
