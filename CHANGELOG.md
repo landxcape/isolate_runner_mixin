@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.3
+
+- Docs: Added interactive sandbox demo badge and streamlined CLI installation instructions.
+
 ## 0.5.2
 
 * Feat: Added conditional Web and WebAssembly (WASM) runtime support via event-loop fallback and microtask yielding.
